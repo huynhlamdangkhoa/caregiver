@@ -73,8 +73,10 @@ def on_disconnect(client, userdata, rc):
 
 # Function to check and process ThingSpeak data
 def check_thingspeak_data(client):
-    object_map = {1: "light", 2: "fan"}
-    action_map = {1: "on", 0: "off"}
+    # Reverse mapping dictionaries
+    object_map = {1: "light", 2: "fan", 3: "ac"}  
+    action_map = {1: "on", 0: "off"}  
+    ac_action_map = {1: "power", 2: "temp_up", 3: "temp_down"}  
 
     while True:
         try:
@@ -89,28 +91,47 @@ def check_thingspeak_data(client):
                     print(f"Latest feed: {latest_feed}")
                     device_id = latest_feed.get("field1")
                     action_id = latest_feed.get("field2")
-                    print(f"Extracted - Device ID: {device_id}, Action ID: {action_id}")
+                    ac_action_id = latest_feed.get("field3")  
+
+                    print(f"Extracted - Device ID: {device_id}, Action ID: {action_id}, AC Action ID: {ac_action_id}")
 
                     if device_id and action_id and device_id.isdigit() and action_id.isdigit():
                         device = object_map.get(int(device_id))
                         action = action_map.get(int(action_id))
                         print(f"Mapped - Device: {device}, Action: {action}")
-                        if device and action:
+                        if device and action and device in ["light", "fan"]:  # Chỉ áp dụng on/off cho light/fan
                             topic = DEVICE_TOPICS.get(device)
                             if topic:
                                 result = client.publish(topic, action)
                                 if result.rc == mqtt.MQTT_ERR_SUCCESS:
                                     logging.info(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
                                     print(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                                    client.publish(f"{APP_TOPIC}/ack", f"{device}:{action}:success")
                                 else:
                                     logging.error(f"Failed to publish to {topic}, return code: {result.rc}")
                                     print(f"Failed to publish to {topic}, return code: {result.rc}")
                             else:
                                 logging.warning(f"Unknown device from ThingSpeak: {device}")
                                 print(f"Unknown device from ThingSpeak: {device}")
+                        elif device == "ac" and ac_action_id and ac_action_id.isdigit():
+                            ac_action = ac_action_map.get(int(ac_action_id))
+                            if ac_action:
+                                topic = DEVICE_TOPICS.get(device)
+                                if topic:
+                                    result = client.publish(topic, ac_action)
+                                    if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                                        logging.info(f"Sent '{ac_action}' to {device} on topic {topic} from ThingSpeak")
+                                        print(f"Sent '{ac_action}' to {device} on topic {topic} from ThingSpeak")
+                                        client.publish(f"{APP_TOPIC}/ack", f"{device}:{ac_action}:success")
+                                    else:
+                                        logging.error(f"Failed to publish to {topic}, return code: {result.rc}")
+                                        print(f"Failed to publish to {topic}, return code: {result.rc}")
+                                else:
+                                    logging.warning(f"Unknown device from ThingSpeak: {device}")
+                                    print(f"Unknown device from ThingSpeak: {device}")
                         else:
-                            logging.warning(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}")
-                            print(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}")
+                            logging.warning(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}, ac_action_id: {ac_action_id}")
+                            print(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}, ac_action_id: {ac_action_id}")
                     else:
                         logging.warning(f"Missing or invalid field1 or field2 in feed: {latest_feed}")
                         print(f"Missing or invalid field1 or field2 in feed: {latest_feed}")
