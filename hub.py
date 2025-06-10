@@ -19,8 +19,8 @@ DEVICE_TOPICS = {
 }
 
 # ThingSpeak Configuration
-THINGSPEAK_CHANNEL_ID = "YOUR_CHANNEL_ID"  # Thay bằng Channel ID của bạn
-THINGSPEAK_READ_API_KEY = "YOUR_READ_API_KEY"  # Thay bằng Read API Key của bạn
+THINGSPEAK_CHANNEL_ID = "2978875"
+THINGSPEAK_READ_API_KEY = "DNT5K8NXRSCJJCPG"
 THINGSPEAK_API_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={THINGSPEAK_READ_API_KEY}&results=1"
 
 # Configure Logging
@@ -73,39 +73,57 @@ def on_disconnect(client, userdata, rc):
 
 # Function to check and process ThingSpeak data
 def check_thingspeak_data(client):
-    # Reverse mapping dictionaries
-    object_map = {1: "light", 2: "fan"}  # Ngược lại từ upload_to_thingspeak
-    action_map = {1: "on", 0: "off"}     # Ngược lại từ upload_to_thingspeak
+    object_map = {1: "light", 2: "fan"}
+    action_map = {1: "on", 0: "off"}
 
     while True:
         try:
+            print(f"Checking ThingSpeak data at {time.strftime('%H:%M:%S')}")
             response = requests.get(THINGSPEAK_API_URL, timeout=10)
+            print(f"ThingSpeak response status: {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
+                print(f"Raw data from ThingSpeak: {data}")
                 if data.get("feeds"):
                     latest_feed = data["feeds"][0]
-                    # Lấy giá trị từ field1 (device) và field2 (action)
+                    print(f"Latest feed: {latest_feed}")
                     device_id = latest_feed.get("field1")
                     action_id = latest_feed.get("field2")
+                    print(f"Extracted - Device ID: {device_id}, Action ID: {action_id}")
 
-                    if device_id in object_map and action_id in action_map:
-                        device = object_map[int(device_id)]
-                        action = action_map[int(action_id)]
-                        topic = DEVICE_TOPICS.get(device)
-                        if topic:
-                            client.publish(topic, action)
-                            logging.info(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
-                            print(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                    if device_id and action_id and device_id.isdigit() and action_id.isdigit():
+                        device = object_map.get(int(device_id))
+                        action = action_map.get(int(action_id))
+                        print(f"Mapped - Device: {device}, Action: {action}")
+                        if device and action:
+                            topic = DEVICE_TOPICS.get(device)
+                            if topic:
+                                result = client.publish(topic, action)
+                                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                                    logging.info(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                                    print(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                                else:
+                                    logging.error(f"Failed to publish to {topic}, return code: {result.rc}")
+                                    print(f"Failed to publish to {topic}, return code: {result.rc}")
+                            else:
+                                logging.warning(f"Unknown device from ThingSpeak: {device}")
+                                print(f"Unknown device from ThingSpeak: {device}")
                         else:
-                            logging.warning(f"Unknown device from ThingSpeak: {device}")
+                            logging.warning(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}")
+                            print(f"Invalid mapping for device_id: {device_id}, action_id: {action_id}")
                     else:
-                        logging.warning(f"Invalid device or action ID from ThingSpeak: {device_id}, {action_id}")
+                        logging.warning(f"Missing or invalid field1 or field2 in feed: {latest_feed}")
+                        print(f"Missing or invalid field1 or field2 in feed: {latest_feed}")
+                else:
+                    logging.warning("No feeds data in ThingSpeak response")
+                    print("No feeds data in ThingSpeak response")
             else:
                 logging.warning(f"Failed to fetch ThingSpeak data, status code: {response.status_code}")
+                print(f"Failed to fetch ThingSpeak data, status code: {response.status_code}")
         except Exception as e:
             logging.error(f"Error fetching ThingSpeak data: {e}")
             print(f"Error fetching ThingSpeak data: {e}")
-        time.sleep(15)  # Đợi 15 giây, theo giới hạn API ThingSpeak
+        time.sleep(15)
 
 # Setup MQTT Client
 client = mqtt.Client()
@@ -125,6 +143,8 @@ except Exception as e:
 logging.info("Central Hub is running...")
 print("Central Hub is running...")
 client.loop_start()
+logging.info("Starting ThingSpeak check thread...")
+print("Starting ThingSpeak check thread...")
 check_thread = threading.Thread(target=check_thingspeak_data, args=(client,), daemon=True)
 check_thread.start()
 
