@@ -1,55 +1,60 @@
-import paho.mqtt.client as mqtt #Thư viện này dùng để tạo client giao tiếp qua giao thức MQTT.
-import logging #Import module logging để ghi lại thông tin, cảnh báo, lỗi vào file log (theo dõi hoạt động của chương trình).
+import paho.mqtt.client as mqtt
+import logging
+import requests
+import time
+import os
+import threading
 
 # MQTT Broker Configuration
-BROKER = "localhost"  # BROKER: địa chỉ của MQTT Broker. Ở đây là "localhost" tức là broker chạy trên cùng máy. Replace with your broker's IP if not local
-PORT = 1883  # Default MQTT port
+BROKER = "localhost"
+PORT = 1883
 
-#MQTT Topics
-APP_TOPIC = "home/control"       # Topic hận điều khiển từ app
-DEVICE_TOPIC = "home/devices"    # General device topic
-DEVICE_TOPICS = {                # Specific topics for devices
+# MQTT Topics
+APP_TOPIC = "home/control"
+DEVICE_TOPIC = "home/devices"
+DEVICE_TOPICS = {
     "fan": "home/devices/fan",
     "light": "home/devices/light",
     "ac": "home/devices/ac"
 }
 
+# ThingSpeak Configuration
+THINGSPEAK_CHANNEL_ID = "YOUR_CHANNEL_ID"  # Thay bằng Channel ID của bạn
+THINGSPEAK_READ_API_KEY = "YOUR_READ_API_KEY"  # Thay bằng Read API Key của bạn
+THINGSPEAK_API_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={THINGSPEAK_READ_API_KEY}&results=1"
+
 # Configure Logging
 logging.basicConfig(
-    filename="hub.log", #Ghi log vào file hub.log.
-    level=logging.INFO, #level=INFO: chỉ ghi những log cấp độ từ INFO trở lên (bao gồm WARNING, ERROR).
-    format="%(asctime)s - %(levelname)s - %(message)s" #định dạng log bao gồm thời gian, cấp độ, và nội dung.
+    filename="hub.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 # Callback when the client connects to the broker
-def on_connect(client, userdata, flags, rc): #Hàm callback khi kết nối tới broker
-    if rc == 0: #
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
         logging.info("Connected to MQTT Broker")
         print("Connected to MQTT Broker")
-        # Subscribe to the control topic
         client.subscribe(APP_TOPIC)
     else:
         logging.error(f"Failed to connect, return code {rc}")
         print(f"Failed to connect, return code {rc}")
 
 # Callback when a message is received
-def on_message(client, userdata, msg): #Hàm được gọi mỗi khi client nhận được một tin nhắn trên topic đã đăng ký.
+def on_message(client, userdata, msg):
     try:
-        payload = msg.payload.decode() #Giải mã nội dung tin nhắn từ bytes sang string.
+        payload = msg.payload.decode()
         logging.info(f"Received message on {msg.topic}: {payload}")
-        print(f"Received: {payload}") #Ghi log và in nội dung tin nhắn nhận được.
+        print(f"Received: {payload}")
 
-        # Parse the message
         command = payload.split(":")
         if len(command) == 2:
-            device, action = command  #Giả sử định dạng lệnh là device:action (VD: fan:on), hàm này chia ra làm 2 phần: device và action.
-            topic = DEVICE_TOPICS.get(device) #Truy xuất topic thiết bị từ từ điển DEVICE_TOPICS.
+            device, action = command
+            topic = DEVICE_TOPICS.get(device)
             if topic:
-                # Forward the command to the specific device
                 client.publish(topic, action)
                 logging.info(f"Forwarded '{action}' to {device} on topic {topic}")
                 print(f"Forwarded '{action}' to {device} on topic {topic}")
-                # Acknowledge to the app
                 client.publish(f"{APP_TOPIC}/ack", f"{device}:{action}:success")
             else:
                 logging.warning(f"Unknown device: {device}")
@@ -66,22 +71,68 @@ def on_disconnect(client, userdata, rc):
     logging.warning("Disconnected from MQTT Broker")
     print("Disconnected from MQTT Broker")
 
-# Setup MQTT Client
-client = mqtt.Client() #Tạo một MQTT client mới.
+# Function to check and process ThingSpeak data
+def check_thingspeak_data(client):
+    # Reverse mapping dictionaries
+    object_map = {1: "light", 2: "fan"}  # Ngược lại từ upload_to_thingspeak
+    action_map = {1: "on", 0: "off"}     # Ngược lại từ upload_to_thingspeak
 
-client.on_connect = on_connect #Gán các hàm xử lý tương ứng khi client kết nối, nhận tin nhắn, hoặc bị ngắt.
-client.on_message = on_message 
+    while True:
+        try:
+            response = requests.get(THINGSPEAK_API_URL, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("feeds"):
+                    latest_feed = data["feeds"][0]
+                    # Lấy giá trị từ field1 (device) và field2 (action)
+                    device_id = latest_feed.get("field1")
+                    action_id = latest_feed.get("field2")
+
+                    if device_id in object_map and action_id in action_map:
+                        device = object_map[int(device_id)]
+                        action = action_map[int(action_id)]
+                        topic = DEVICE_TOPICS.get(device)
+                        if topic:
+                            client.publish(topic, action)
+                            logging.info(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                            print(f"Sent '{action}' to {device} on topic {topic} from ThingSpeak")
+                        else:
+                            logging.warning(f"Unknown device from ThingSpeak: {device}")
+                    else:
+                        logging.warning(f"Invalid device or action ID from ThingSpeak: {device_id}, {action_id}")
+            else:
+                logging.warning(f"Failed to fetch ThingSpeak data, status code: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Error fetching ThingSpeak data: {e}")
+            print(f"Error fetching ThingSpeak data: {e}")
+        time.sleep(15)  # Đợi 15 giây, theo giới hạn API ThingSpeak
+
+# Setup MQTT Client
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
 client.on_disconnect = on_disconnect
 
 # Connect to the broker
 try:
-    client.connect(BROKER, PORT, 60) #Cố gắng kết nối đến broker tại địa chỉ và cổng đã chỉ định. Timeout = 60s.
+    client.connect(BROKER, PORT, 60)
 except Exception as e:
     logging.error(f"Could not connect to MQTT Broker: {e}")
     print(f"Could not connect to MQTT Broker: {e}")
     exit(1)
 
-# Start the loop
+# Start the loop and ThingSpeak checking in separate threads
 logging.info("Central Hub is running...")
 print("Central Hub is running...")
-client.loop_forever() #loop_forever() sẽ giữ chương trình chạy mãi và xử lý các sự kiện MQTT liên tục (nhận/gửi tin nhắn...).
+client.loop_start()
+check_thread = threading.Thread(target=check_thingspeak_data, args=(client,), daemon=True)
+check_thread.start()
+
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    logging.info("Central Hub stopped by user")
+    print("Central Hub stopped by user")
+    client.loop_stop()
+    client.disconnect()
